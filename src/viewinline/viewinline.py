@@ -104,7 +104,6 @@ def is_chafa_available() -> bool:
 
 _TERMINAL_INFO = detect_terminal()
 _TERMINAL_SUPPORTS_IMAGES = not is_terminal_without_images(_TERMINAL_INFO)
-_IS_CHAFA_AVAILABLE = is_chafa_available()
 
 # ---------------------------------------------------------------------
 # Display utilities
@@ -137,7 +136,7 @@ def show_inline_image(image_array: np.ndarray, display_scale = None, is_vector: 
     if _TERMINAL_SUPPORTS_IMAGES:
         sys.stdout.write(f"\033]1337;File=inline=1;width={width_pct}%:{encoded}\a\n")
     else:
-        if _IS_CHAFA_AVAILABLE:
+        if is_chafa_available():
             chafa_output = subprocess.check_output(
                 ["chafa", "-"],  
                 input=image_bytes
