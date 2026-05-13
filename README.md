@@ -17,7 +17,7 @@ Particularly useful on HPC systems and remote servers accessed via SSH. Images r
 
 This tool combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**: you can't zoom, pan, or switch colormaps on the fly. Instead, you control everything through command-line options (e.g. --display, --color-by, --colormap).
 
-It uses the iTerm2 inline image protocol (OSC 1337) to render previews. In incompatible terminals, the escape codes are silently ignored with no errors or crashes.
+It uses the iTerm2 inline image protocol (OSC 1337) in supported terminals, and falls back to `chafa` in others, which displays real high-res images in terminals like kitty and Ghostty, and colored block-art (ASCII art) previews in Terminal.app, VS Code, and most Linux terminals. Without `chafa` installed, non-iTerm2-family terminals show an info message instead.
 
 ## Installation  
 Requires Python 3.9 or later.  
@@ -63,18 +63,30 @@ viewinline data.geoparquet --table --where "POP > 100000" --sort POP --desc
 
 ## Compatible terminals
 
-The iTerm2 inline image protocol (OSC 1337) is supported by:
+Native (no extra install required): images render via the iTerm2 inline image protocol on:
 
 - **iTerm2** (macOS)
 - **WezTerm** (cross-platform)
 - **Konsole** (Linux/KDE)
 - **Rio**, **Contour** (cross-platform)
 
-**Not compatible:** Mac Terminal, GNOME Terminal, Kitty (uses different protocol), Ghostty, Alacritty
+Via `chafa` (recommended for everyone else): install chafa and viewinline works in nearly every terminal:
+- kitty, Ghostty, foot — real high-resolution images via the kitty graphics protocol or sixel
+- Terminal.app, VS Code, GNOME Terminal, Alacritty, Warp, Hyper — colored block-art previews with 24-bit color
+
+Install chafa once (it's a system binary, available across all conda/virtualenv environments):
+
+```
+brew install chafa          # macOS
+sudo apt install chafa      # Debian/Ubuntu
+sudo dnf install chafa      # Fedora
+```
+Without chafa, terminals outside the native list above show an info message instead of an image.
+You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGINE=chafa`.
 
 **SSH/HPC usage:** Works over SSH when connecting from a compatible terminal. Images render on your local machine, not the remote server. No X11 forwarding or VNC required.
 
-**tmux/screen:** Inline images don't work inside tmux or screen sessions, even with `allow-passthrough on`. Use a plain terminal tab.
+**tmux/screen:** Inline images work inside tmux only when the outer terminal is iTerm2 (or WezTerm/Konsole/Rio/Contour). In tmux with other outer terminals (kitty, Terminal.app, etc.), viewinline displays ASCII art previews instead of full-quality images.
 
 **Fallback:** In terminals that do not support inline images, you can fallback to ASCII art by installing [`chafa`](https://hpjansson.org/chafa/) command-line tool. Install `chafa` with your package manager (e.g. `brew install chafa` or `sudo apt install chafa`). You can also force the use of `chafa` by setting the environment variable `INLINE_VIEWER_ENGINE=chafa`.
 
@@ -137,6 +149,7 @@ The iTerm2 inline image protocol (OSC 1337) is supported by:
 - `numpy`, `pandas` — data handling
 
 **Optional dependencies:**
+- `chafa` — strongly recommended for terminal coverage beyond iTerm2/WezTerm/Konsole/Rio/Contour. System binary, not a Python package. See "Terminal support" above for install instructions.
 - `duckdb` — required for `--where`, `--sort`, `--sql`, `--limit` with filtering
   ```bash
   pip install duckdb

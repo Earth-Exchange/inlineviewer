@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "viewinline"
-version = "0.2.2"
-description = "Quick look geospatial viewer for iTerm2 compatible terminals"
+version = "0.2.3"
+description = "Quick look geospatial viewer for the terminal, with inline image previews"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [
@@ -22,12 +22,12 @@ dependencies = [
   "pyogrio",
   "pandas"
 ]
-
 [project.optional-dependencies]
 sql = ["duckdb"]
 parquet = ["pyarrow"]
 hdf5 = ["h5py"]
-all = ["duckdb", "pyarrow", "h5py"]
+netcdf = ["netCDF4"]
+all = ["duckdb", "pyarrow", "h5py", "netCDF4"]
 
 [project.scripts]
 viewinline = "viewinline.viewinline:main"

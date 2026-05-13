@@ -33,7 +33,7 @@ import warnings
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -41,12 +41,61 @@ AVAILABLE_COLORMAPS = [
     "Spectral", "cubehelix", "tab10", "turbo"
 ]
 
+# Terminals that don't natively support the iTerm2 OSC 1337 inline image
+# protocol. Output for these is routed through chafa instead.
+#
+# Note: presence in this list does NOT mean "no images." Chafa auto-detects
+# the terminal and picks the best output:
+#   - kitty (xterm-kitty) → real images via kitty graphics protocol
+#   - some others (e.g. foot, Ghostty) → may render real images via sixel
+#     or kitty protocol depending on chafa's detection
+#   - most others → Unicode block-art preview with 24-bit color
+#     (Terminal.app, VS Code, GNOME Terminal, Alacritty, Warp, etc.)
+# Only terminals without chafa installed see no rendering at all.
+
 _TERMINALS_WITHOUT_IMAGES = [
-    'unknown', 'cygwin', 'tmux', 'screen',
-    'vscode', 'xterm', 'rxvt', 'alacritty', 'foot', 'st', 'kitty',
-    'gnome-terminal', 'xfce4-terminal', 'lxterminal', 'terminator',
-    'tilix', 'hyper', 'windows terminal', 'putty', 'sakura',
-    'terminology', 'eterm', 'guake', 'tilda', 'deepin-terminal',
+    # macOS
+    'Apple_Terminal',         # $TERM_PROGRAM for Terminal.app
+
+    # kitty (renders real images via chafa → kitty graphics protocol)
+    'xterm-kitty',            # $TERM in kitty
+
+    # tmux / screen (TERM strings; $TMUX env var also signals tmux)
+    'screen', 'screen-256color',
+    'tmux', 'tmux-256color',
+
+    # Editors / IDE terminals
+    'vscode',                 # $TERM_PROGRAM in VS Code integrated terminal
+
+    # Cross-platform terminals known not to support OSC 1337
+    'alacritty',
+    'foot',                   # supports sixel → chafa renders real images
+    'ghostty', 'xterm-ghostty',
+    'WarpTerminal',           # $TERM_PROGRAM in Warp
+    'Hyper',                  # $TERM_PROGRAM in Hyper
+
+    # Generic / legacy
+    'unknown',
+    'cygwin',
+    'rxvt', 'rxvt-unicode', 'rxvt-unicode-256color',
+    'st-256color',            # suckless st
+
+    # Linux desktop terminals (most are VTE-based, no OSC 1337)
+    'gnome-terminal',
+    'xfce4-terminal',
+    'lxterminal',
+    'terminator',
+    'tilix',
+    'sakura',
+    'terminology',
+    'guake',
+    'tilda',
+    'deepin-terminal',
+    'eterm',
+
+    # Windows
+    'putty',
+    'Windows Terminal',
 ]
 
 def detect_terminal() -> dict[str, str]:
@@ -136,39 +185,56 @@ def show_inline_image(image_array: np.ndarray, display_scale = None, is_vector: 
     if _TERMINAL_SUPPORTS_IMAGES:
         sys.stdout.write(f"\033]1337;File=inline=1;width={width_pct}%:{encoded}\a\n")
     else:
+        # if is_chafa_available():
+        #     chafa_output = subprocess.check_output(
+        #         ["chafa", "-"],  
+        #         input=image_bytes
+        #     ).decode()
+            
+        #     sys.stdout.write(f"\n{chafa_output}\a\n")
         if is_chafa_available():
+            # Inside tmux, force chafa to use block-art symbols instead of
+            # graphics protocols. Tmux mangles kitty graphics and sixel
+            # protocols, producing dot-character garbage on screen. Block-art
+            # passes through tmux reliably on every outer terminal.
+            chafa_args = ["chafa", "-"]
+            if os.environ.get("TMUX"):
+                chafa_args = ["chafa", "-f", "symbols", "-"]
             chafa_output = subprocess.check_output(
-                ["chafa", "-"],  
+                chafa_args,
                 input=image_bytes
             ).decode()
             
             sys.stdout.write(f"\n{chafa_output}\a\n")
+            
         else:
             sys.stdout.write(f"[INFO] Use supported terminal or install 'chafa' for ascii art fallback. Detected: {_TERMINAL_INFO}\n")
     
     sys.stdout.flush()
 
-
-def show_image_auto(img: np.ndarray, display_scale = None, is_vector: bool = False) -> None:
-    """Attempt inline image display. No fallbacks, no detection.
+def show_image_auto(img: np.ndarray, display_scale=None, is_vector: bool = False) -> None:
+    """Render an image inline, with chafa fallback for non-iTerm2 terminals.
     
-    Just sends the iTerm2 inline image escape sequence. If the terminal supports it,
-    great. If not, the escape codes are ignored and nothing happens.
+    Cascade:
+      1. If terminal supports OSC 1337 → emit iTerm2 inline image sequence.
+      2. Else if chafa is installed → pipe through chafa (which auto-detects
+         and emits the terminal's native graphics protocol or block-art).
+      3. Else → print an info message suggesting chafa installation.
     
+    The branching happens inside show_inline_image(); this wrapper handles
+    status messaging and exception safety.
     """
-    if os.environ.get("TMUX"):
-        print("[WARN] Inside tmux — inline images won't display even with allow-passthrough on (known iTerm2/tmux issue). Use a plain terminal tab.")
-        return
-    
     try:
         show_inline_image(img, display_scale, is_vector)
-        print("[VIEW] Image sent — visible in compatible terminals")
+        if _TERMINAL_SUPPORTS_IMAGES:
+            print("[VIEW] Image rendered")
+        elif is_chafa_available():
+            print("[VIEW] Rendered via chafa")
+        # If neither path applies, show_inline_image already printed the info message
     except Exception as e:
-        # If image encoding fails, print error but don't crash
-        print(f"[ERROR] Failed to encode image: {e}")
+        print(f"[ERROR] Failed to render image: {e}")
         import traceback
         traceback.print_exc()
-
 
 def resize_to_terminal(img: np.ndarray) -> tuple[np.ndarray, float]:
     """Resize image to fit terminal window (approx 8x16 pixel cells)."""
@@ -593,6 +659,7 @@ def render_raster(paths: list[str], args) -> None:
             # Handle NetCDF/HDF with subdatasets
             if path.lower().endswith(('.nc', '.hdf', '.hdf5', '.h5')):
                 try:
+                
                     with rasterio.open(path) as src:
                         subdatasets = src.subdatasets
                     
