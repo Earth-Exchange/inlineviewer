@@ -166,7 +166,7 @@ You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGI
 
 **Note on HDF support:**
 - **HDF5** (.h5, .hdf5): Supported via rasterio if GDAL has HDF5 support (most installations)
-- **HDF4** (.hdf): Requires GDAL compiled with HDF4 support (common in MODIS data)
+- **HDF4** (.hdf): Requires GDAL compiled with HDF4 support (the legacy format used by MODIS and older NASA products)
 - **NetCDF** (.nc): Supported via rasterio (uses GDAL's NetCDF driver)
 
 ## Available options
