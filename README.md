@@ -4,7 +4,7 @@
 [![Python version](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg)](https://pypi.org/project/viewinline/)
 
 **Quick-look geospatial viewer for compatible terminals.**  
-Displays rasters, vectors, and tabular data directly in the terminal with no GUI and no temporary files.
+Displays rasters, vectors, and tabular data directly in the terminal with no GUI.
 
 <p align="center">
   <a href="viewinline_gif1.gif"><img src="viewinline_gif1.gif" width="49%"></a>
