@@ -184,12 +184,12 @@ General:
 Raster:
   --band BAND           Band number to display (single raster), or slice number for NetCDF. (default: 1)
   --bands BANDS         Display multiple bands as a grid. Accepts ranges (30-40), lists (3,4,5), or mixed (1,5,10-15).
+  --rgb R G B           Three band numbers for RGB display (e.g., --rgb 4 3 2). Overrides default 1 2 3.
+  --rgbfiles R G B      Three single-band rasters for RGB composite. Can also provide as positional arguments.
   --timestep INTEGER    Alias for --band when working with NetCDF files.
   --subset INTEGER      Variable index for NetCDF/HDF files (e.g., --subset 1).
   --reduce DIM_NAME     For 3D NetCDF variables, specify which dimension to use as the band/slider axis.  Auto-detected if omitted.
   --colormap            Apply colormap to single-band rasters. Flag without the color scheme → 'terrain'.
-  --rgb R G B           Three band numbers for RGB display (e.g., --rgb 4 3 2). Overrides default 1 2 3.
-  --rgbfiles R G B      Three single-band rasters for RGB composite. Can also provide as positional arguments.
   --vmin VMIN           Minimum pixel value for raster display scaling.
   --vmax VMAX           Maximum pixel value for raster display scaling.
   --nodata NODATA       Override nodata value for rasters if dataset metadata is missing or incorrect.

@@ -9,14 +9,11 @@ Supports:
 
 Display:
   Sends iTerm2-style inline image escape sequences. Works in terminals that support
-  the iTerm2 inline image protocol (iTerm2, WezTerm, Konsole, etc.). In other
-  terminals, the escape codes are ignored.
+  the iTerm2 inline image protocol (iTerm2, WezTerm, Konsole, etc.). For others,
+  please see line 48-58. 
   
   Particularly useful on HPC systems and remote servers accessed via SSH — images
   render on your local terminal without X11 forwarding, VNC, or file downloads.
-  
-  No detection, no fallbacks. If images are not shown, it means that the terminal 
-  is not compatible.
 """
 
 import sys, os, base64, shutil, argparse
@@ -28,19 +25,13 @@ from matplotlib import colormaps
 import matplotlib as mpl
 import subprocess
 
-try:
-    import netCDF4
-    HAS_NETCDF4 = True
-except ImportError:
-    HAS_NETCDF4 = False
-
 import warnings
 
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
 warnings.filterwarnings("ignore", message="invalid scale_factor or add_offset attribute", category=UserWarning)
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -266,6 +257,23 @@ def parse_bands(s: str) -> list[int]:
                 print(f"[WARN] Could not parse band: {part}")
     return sorted(set(bands))
 
+def parse_rgb(values: list[str]) -> list[int]:
+    """Parse --rgb: accepts '4 3 2' or '4,3,2'."""
+    if len(values) == 1:
+        # comma-separated: '4,3,2'
+        parts = values[0].split(",")
+    else:
+        # space-separated: '4' '3' '2'
+        parts = values
+    try:
+        result = [int(p.strip()) for p in parts]
+        if len(result) != 3:
+            raise ValueError
+        return result
+    except ValueError:
+        print("[WARN] --rgb requires exactly 3 band numbers. e.g. --rgb 4 3 2 or --rgb 4,3,2")
+        return None
+    
 # ---------------------------------------------------------------------
 # CSV handling
 # ---------------------------------------------------------------------
@@ -304,11 +312,18 @@ def preview_df(df, max_rows: int = 10, query_mode: bool = False, filename: str =
     # -------------------------------------------------------------
     if n_rows <= max_rows:
         rows_to_show = df
+    elif query_mode:
+        ans = input(f"Filtered results: {n_rows} rows. Show first {max_rows} or all? [first/all]: ").strip().lower()
+        if ans == "all":
+            rows_to_show = df
+        else:
+            rows_to_show = df.head(max_rows)
     else:
-        ans = input(f"Preview first {max_rows} rows? [y/N]: ").strip().lower()
-        if ans not in ("y", "yes"):
-            return
-        rows_to_show = df.head(max_rows)
+        ans = input(f"Large file: {n_rows} rows. Show first {max_rows} or all? [first/all]: ").strip().lower()
+        if ans == "all":
+            rows_to_show = df
+        else:
+            rows_to_show = df.head(max_rows)        
 
     # -------------------------------------------------------------
     # Build pretty table
@@ -610,8 +625,15 @@ def normalize_to_uint8(band: np.ndarray, vmin=None, vmax=None, nodata=None) -> n
     valid_vals = band[valid]
 
     # --- Manual scaling ---
-    if vmin is not None and vmax is not None:
-        mn, mx = vmin, vmax
+    if vmin is not None or vmax is not None:
+        # Use percentile for whichever end is not specified
+        if valid_vals.size < 1_000_000:
+            sample = valid_vals
+        else:
+            sample = np.random.choice(valid_vals, 1_000_000, replace=False)
+        p2, p98 = np.percentile(sample, (2, 98))
+        mn = vmin if vmin is not None else p2
+        mx = vmax if vmax is not None else p98
         print(f"[VIEW] Using manual scaling: {mn} to {mx}")
 
     # --- Percentile fallback ---
@@ -664,7 +686,9 @@ def render_netcdf_via_netcdf4(path, args):
     """Read a NetCDF file via netCDF4 (bypassing GDAL). Handles hierarchical
     groups and hyperspectral cubes where GDAL aborts or interprets axes wrong.
     """
-    if not HAS_NETCDF4:
+    try:
+        import netCDF4
+    except ImportError:
         print("[ERROR] netCDF4 not installed. Install with:")
         print("        pip install netCDF4")
         print("        or:  pip install viewinline[netcdf]")
@@ -759,7 +783,7 @@ def render_netcdf_via_netcdf4(path, args):
         # BANDS GALLERY for NetCDF
         if getattr(args, "bands", None):
             band_list = parse_bands(args.bands)
-            print(f"[DEBUG] band_count={band_count}, band_list={band_list}")
+            # print(f"[DEBUG] band_count={band_count}, band_list={band_list}")
             valid_bands = [b for b in band_list if 1 <= b <= band_count]
             if not valid_bands:
                 print(f"[ERROR] No valid bands. Variable has {band_count} bands along '{var.dimensions[spectral_axis]}'.")
@@ -773,10 +797,48 @@ def render_netcdf_via_netcdf4(path, args):
             nc.close()
             colormap = args.colormap if args.colormap else "viridis"
             render_bands_gallery(np.stack(slices, axis=0), valid_bands, band_count,
-                                display_scale=getattr(args, "display", None),
-                                colormap=colormap)
+                                 grid=getattr(args, "gallery", None),
+                                 display_scale=getattr(args, "display", None),
+                                 colormap=colormap)
             return
 
+        # RGB COMPOSITE for NetCDF
+        if getattr(args, "rgb", None):
+            try:
+                # rgb_bands = args.rgb
+                rgb_bands = parse_rgb(args.rgb)
+                if rgb_bands is None:
+                    return
+                if len(rgb_bands) != 3:
+                    raise ValueError("exactly 3 bands required")
+                slices = []
+                for b in rgb_bands:
+                    if b < 1 or b > band_count:
+                        raise ValueError(f"band {b} out of range (1-{band_count})")
+                    slicer = [slice(None)] * 3
+                    slicer[spectral_axis] = b - 1
+                    slices.append(np.asarray(var[tuple(slicer)], dtype=np.float64))
+                nc.close()
+                print(f"[INFO] Using RGB bands: {rgb_bands}")
+                img = np.stack([normalize_to_uint8(s, vmin=args.vmin, vmax=args.vmax, nodata=args.nodata)
+                                for s in slices], axis=-1)
+                H, W = img.shape[:2]
+                if args.display:
+                    new_w = max(1, int(W * args.display))
+                    new_h = max(1, int(H * args.display))
+                    img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
+                else:
+                    max_dim = 2000
+                    if max(H, W) > max_dim:
+                        scale = max_dim / max(H, W)
+                        new_w, new_h = int(W * scale), int(H * scale)
+                        img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
+                show_image_auto(img, getattr(args, "display", None), is_vector=False)
+                return
+            except ValueError as e:
+                print(f"[WARN] Invalid --rgb: {e}. Falling back to band 1.")
+
+        # Single band slicer
         slicer = [slice(None)] * 3
         slicer[spectral_axis] = band_idx
         data = np.asarray(var[tuple(slicer)], dtype=np.float64)
@@ -970,14 +1032,13 @@ def render_raster(paths: list[str], args) -> None:
             if band_count >= 3 and not paths[0].lower().endswith('.nc') and not user_specified_band and getattr(args, 'rgb', None):
 
                 if getattr(args, "rgb", None):
-                    try:
-                        rgb_idx = [b - 1 for b in args.rgb]
-                        if len(rgb_idx) != 3:
-                            raise ValueError
-                        print(f"[INFO] Using RGB bands: {args.rgb}")
-                    except Exception:
+                    rgb_parsed = parse_rgb(args.rgb)
+                    if rgb_parsed is None:
                         print("[WARN] Invalid --rgb. Using default 1 2 3")
                         rgb_idx = [0, 1, 2]
+                    else:
+                        rgb_idx = [b - 1 for b in rgb_parsed]
+                        print(f"[INFO] Using RGB bands: {rgb_parsed}")
                 else:
                     rgb_idx = [0, 1, 2]
 
@@ -1100,6 +1161,7 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
 
         # Load thumbnails
         thumbs = []
+        loaded_files = []
         thumb_size = (128, 128)
         for f in files:
             try:
@@ -1122,6 +1184,7 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
                     img = Image.open(f).convert("RGB")
                 img.thumbnail(thumb_size)
                 thumbs.append(img)
+                loaded_files.append(f)
 
             except Exception as e:
                 print(f"[SKIP] {os.path.basename(f)} — {e}")
@@ -1147,8 +1210,12 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
             canvas.paste(img, (x, y))
 
         print(f"[INFO] Displaying {n} images ({cols}×{rows} grid)")
-        show_image_auto(np.array(canvas), display_scale, is_vector)
 
+        for r in range(rows):
+            row_files = loaded_files[r * cols:(r + 1) * cols]
+            print("  ".join(f"{os.path.basename(f):<20}" for f in row_files))
+
+        show_image_auto(np.array(canvas), display_scale, is_vector)
     except Exception as e:
         print(f"[ERROR] Failed to render gallery: {e}")
 
@@ -1156,7 +1223,6 @@ def render_bands_gallery(data: np.ndarray, band_list: list[int], band_count: int
                           grid: str = None, display_scale=None, colormap: str = "viridis") -> None:
     """Render multiple bands from a single raster as a grid of thumbnails."""
     import math
-    from PIL import ImageDraw
 
     # Validate bands
     valid_bands = [b for b in band_list if 1 <= b <= band_count]
@@ -1223,14 +1289,22 @@ def render_bands_gallery(data: np.ndarray, band_list: list[int], band_count: int
         x = margin + c * cell_w
         y = margin + r * cell_h
         canvas.paste(img, (x, y))
-        # Draw label on canvas background below the thumbnail
-        label = f"B{valid_bands[i]}"
-        lx = x + (thumb_w - len(label) * 6) // 2
-        ly = y + thumb_h + 2
-        draw.text((lx, ly), label, fill=(0, 0, 0), font=font)
+        if _TERMINAL_SUPPORTS_IMAGES:
+            # Draw label on canvas background below the thumbnail
+            label = f"B{valid_bands[i]}"
+            lx = x + (thumb_w - len(label) * 6) // 2
+            ly = y + thumb_h + 2
+            draw.text((lx, ly), label, fill=(0, 0, 0), font=font)
 
     print(f"[INFO] Displaying {n} bands ({cols}×{rows} grid, colormap: {colormap})")
     # print(f"[DEBUG] canvas size: {canvas_w}×{canvas_h}px")
+
+    if not _TERMINAL_SUPPORTS_IMAGES:
+        # Print band labels as text grid
+        for r in range(rows):
+            row_bands = valid_bands[r * cols:(r + 1) * cols]
+            print("  ".join(f"B{b:<4}" for b in row_bands))
+
     show_image_auto(np.array(canvas), display_scale)
 
 # ---------------------------------------------------------------------
@@ -1592,152 +1666,140 @@ def main() -> None:
         formatter_class=SmartDefaults
     )
 
-    # File input
+# File input
     parser.add_argument(
-        "paths", nargs="*",  # Zero or more (optional)
+        "paths", nargs="*",
         help="Path to raster(s), vector, or CSV file. Provide 1 file or exactly 3 rasters for RGB (R G B)."
     )
-    # Display options
-    parser.add_argument(
+
+    # General options
+    general = parser.add_argument_group("General")
+    general.add_argument(
         "--display", type=float, default=None,
         help="Resize only the displayed image (0.5=smaller, 2=bigger). Default: auto-fit to terminal."
     )
+    general.add_argument(
+        "--gallery", nargs="?", const="4x4", metavar="GRID",
+        help="Display all image files in a folder as thumbnails (e.g., --gallery 5x4). Incompatible files are skipped."
+    )
 
     # Raster options
-    parser.add_argument(
+    raster = parser.add_argument_group("Raster")
+    raster.add_argument(
         "--band", type=int, default=None,
-        help="Band number to display (single raster case), or slice number for NetCDF."
+        help="Band number to display (single raster), or slice number for NetCDF. (default: 1)"
     )
-    parser.add_argument(
+    raster.add_argument(
+        "--bands", type=str,
+        help="Display multiple bands as a grid. Accepts ranges (30-40), lists (3,4,5), or mixed (1,3,10-15)."
+    )
+    raster.add_argument(
         "--timestep", type=int, default=None,
-        help="Alias for --band when working with NetCDF files (1-based index)."
+        help="Alias for --band when working with NetCDF files."
     )
-    parser.add_argument(
+    raster.add_argument(
+        "--subset", type=int, default=None,
+        help="Variable index for NetCDF/HDF files (e.g., --subset 1)."
+    )
+    raster.add_argument(
+        "--reduce", dest="reduce_dim", type=str, default=None, metavar="DIM_NAME",
+        help="For 3D NetCDF variables, specify which dimension to use as the band/slider axis. Auto-detected if omitted."
+    )
+    raster.add_argument(
         "--colormap", nargs="?", const="terrain",
         choices=AVAILABLE_COLORMAPS, default=None,
-        help="Apply colormap to single-band rasters or vector coloring. Flag without value → 'terrain'."
+        help="Apply colormap to single-band rasters. Flag without value → 'terrain'."
     )
-    parser.add_argument(
-        "--rgb", nargs=3, type=int, metavar=('R', 'G', 'B'), default=None,
-        help="Three band numbers for RGB display (e.g., --rgb 4 3 2). Overrides default 1 2 3."
+    raster.add_argument(
+        "--rgb", nargs='+', type=str, metavar='BAND', default=None,
+        help="Three band numbers for RGB display (e.g., --rgb 4 3 2 or --rgb 4,3,2). Overrides default 1 2 3."
     )
-    parser.add_argument(
+    raster.add_argument(
         "--rgbfiles", nargs=3, type=str, metavar=('R', 'G', 'B'),
-        help="Three single-band rasters for RGB composite (e.g., --rgbfiles R.tif G.tif B.tif). Can also provide as positional arguments without the flag."
+        help="Three single-band rasters for RGB composite. Can also provide as positional arguments."
     )
-    parser.add_argument(
+    raster.add_argument(
         "--vmin", type=float, default=None,
         help="Minimum pixel value for raster display scaling."
     )
-    parser.add_argument(
+    raster.add_argument(
         "--vmax", type=float, default=None,
         help="Maximum pixel value for raster display scaling."
     )
-    parser.add_argument(
+    raster.add_argument(
         "--nodata", type=float, default=None,
         help="Override nodata value for rasters if dataset metadata is missing or incorrect."
     )
-    parser.add_argument(
-    "--gallery", nargs="?", const="4x4", metavar="GRID",
-    help="Display all PNG/JPG/TIF images in a folder as thumbnails (e.g., 5x5 grid)."
-)
-    parser.add_argument(
-        "--subset", type=int, default=None,
-        help="Variable index for NetCDF files (e.g. --subset 1)."
-    )
-    parser.add_argument(
-        "--reduce", dest="reduce_dim", type=str, default=None,
-        metavar="DIM_NAME",
-        help="For 3D NetCDF variables, specify which dimension to use as the band axis (auto-detected if omitted)."
-    )
-    parser.add_argument(
-        "--bands",
-        type=str,
-        help="Display multiple bands as a grid. Accepts ranges (30-40), lists (3,4,5), or mixed (1,3,10-15)."
-    )
-
-    # CSV options
-    parser.add_argument(
-    "--hist",
-    nargs="?",
-    const=True,
-    help="Show histograms for all numeric columns or specify one column name."
-    )
-    parser.add_argument(
-        "--describe",
-        nargs="?",
-        const=True,
-        help="Show summary statistics for all numeric columns or specify one column name."
-    )
-    parser.add_argument(
-    "--bins", type=int, default=20,
-    help="Number of bins for CSV histograms (used with --hist)."
-    )
-    parser.add_argument(
-    "--scatter", nargs=2, metavar=("X", "Y"),
-    help="Plot scatter of two numeric CSV columns (e.g. --scatter area_km2 year)."
-    )
-    parser.add_argument(
-    "--unique",
-    metavar="COLUMN",
-    help="Show unique values for a categorical column and exit"
-    )
-    parser.add_argument(
-        "--where",
-        type=str,
-        default=None,
-        help="Filter rows using SQL WHERE clause (DuckDB required). Example: --where \"year > 2010\""
-    )
-    parser.add_argument(
-        "--sort",
-        type=str,
-        default=None,
-        help="Sort rows by values in the specified column, ascending by default (e.g. --sort population). Use --desc to reverse."
-    )
-    parser.add_argument(
-        "--desc",
-        action="store_true",
-        help="Sort in descending order."
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Limit number of rows shown (e.g. --limit 100)."
-    )
-    parser.add_argument(
-        "--select",
-        nargs="+",
-        help="Select specific columns (space separated) (e.g. --select Country City)"
-    )
-    parser.add_argument(
-        "--sql",
-        type=str,
-        help="Execute full DuckDB SQL query against CSV (advanced mode)."
-    )
 
     # Vector options
-    parser.add_argument(
+    vector = parser.add_argument_group("Vector")
+    vector.add_argument(
         "--color-by", type=str, default=None,
-        help="Numeric column to color vector features by (optional)."
+        help="Numeric column to color vector features by."
     )
-    parser.add_argument(
-    "--width", type=float, default=0.7,
-    help="Line width for vector boundaries"
+    vector.add_argument(
+        "--width", type=float, default=0.7,
+        help="Line width for vector boundaries."
     )
-    parser.add_argument(
+    vector.add_argument(
         "--edgecolor", type=str, default="#F6FF00",
         help="Edge color for vector outlines (hex or named color)."
     )
-    parser.add_argument(
+    vector.add_argument(
         "--layer", type=str, default=None,
-        # help="Layer name for GeoPackage or multi-layer files."
         help="Layer name for GeoPackage/multi-layer files, or variable name for NetCDF files."
     )
-    parser.add_argument(
-    "--table", action="store_true",
-    help="Display vector/parquet file as tabular data instead of rendering geometry."
-    ) 
+    vector.add_argument(
+        "--table", action="store_true",
+        help="Display vector/parquet file as tabular data instead of rendering geometry."
+    )
+
+    # Tabular options
+    tabular = parser.add_argument_group("Tabular")
+    tabular.add_argument(
+        "--hist", nargs="?", const=True,
+        help="Show histograms for all numeric columns or specify one column name."
+    )
+    tabular.add_argument(
+        "--describe", nargs="?", const=True,
+        help="Show summary statistics for all numeric columns or specify one column name."
+    )
+    tabular.add_argument(
+        "--bins", type=int, default=20,
+        help="Number of bins for histograms (used with --hist)."
+    )
+    tabular.add_argument(
+        "--scatter", nargs=2, metavar=("X", "Y"),
+        help="Scatter plot of two numeric columns (e.g. --scatter area_km2 year)."
+    )
+    tabular.add_argument(
+        "--unique", metavar="COLUMN",
+        help="Show unique values for a categorical column."
+    )
+    tabular.add_argument(
+        "--where", type=str, default=None,
+        help="Filter rows using SQL WHERE clause (e.g. --where \"year > 2010\")."
+    )
+    tabular.add_argument(
+        "--sort", type=str, default=None,
+        help="Sort rows by column, ascending by default. Use --desc to reverse."
+    )
+    tabular.add_argument(
+        "--desc", action="store_true",
+        help="Sort in descending order."
+    )
+    tabular.add_argument(
+        "--limit", type=int, default=None,
+        help="Limit number of rows shown (e.g. --limit 100)."
+    )
+    tabular.add_argument(
+        "--select", nargs="+",
+        help="Select specific columns (e.g. --select Country City)."
+    )
+    tabular.add_argument(
+        "--sql", type=str,
+        help="Execute full DuckDB SQL query against CSV/parquet (advanced mode)."
+    )
 
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
