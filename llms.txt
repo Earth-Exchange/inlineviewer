@@ -51,6 +51,23 @@ scoop install chafa        # Windows
 - **tmux/screen:** Full inline images work inside tmux only when the *outer* terminal is iTerm2 (or WezTerm/Konsole/Rio/Contour). With other outer terminals (kitty, Terminal.app, etc.), viewinline shows ASCII/block-art previews instead.
 - **Windows:** For real images, use Windows Terminal (v1.22+) or WezTerm. Stock PuTTY can show block-art via chafa.
 
+### Terminal detection & image-support logic
+
+viewinline decides how to render by detecting the terminal, then routing native-OSC-1337 terminals one way and everything else through chafa.
+
+Detection checks these environment variables (in order): `TERM_PROGRAM`, `KONSOLE_VERSION`, `KONSOLE_PROFILE_NAME`, `VTE_VERSION`, `TERMINATOR_UUID`, `ALACRITTY_SOCKET`, `WEZTERM_EXECUTABLE`, `ITERM_SESSION_ID`, and `TERM`. If none are set, it falls back to inspecting the parent process name (via `ps`).
+
+Override: setting `INLINE_VIEWER_ENGINE=chafa` forces the chafa path on any terminal, bypassing detection.
+
+Important nuance — terminals NOT on the native OSC-1337 list still get images via chafa; "not native" does **not** mean "no images." chafa auto-detects the terminal and picks the best output:
+- `xterm-kitty` (kitty) → real images via the kitty graphics protocol
+- foot, Ghostty, and similar → may render real images via sixel or the kitty protocol, depending on chafa's detection
+- most others (Terminal.app, VS Code, GNOME Terminal, Alacritty, Warp, etc.) → Unicode block-art preview with 24-bit color
+
+Only terminals **without chafa installed** (and outside the native OSC-1337 set) see no rendering at all — just an info message.
+
+Terminals routed through chafa rather than native OSC 1337 (these are the values matched during detection): `Apple_Terminal` (Terminal.app), `xterm-kitty` (kitty), `screen`/`screen-256color`, `tmux`/`tmux-256color` (the `TMUX` env var also signals tmux), `vscode` (VS Code integrated terminal), `alacritty`, `foot`, `ghostty`/`xterm-ghostty`, `WarpTerminal` (Warp), `Hyper`, `unknown`, `cygwin`, `rxvt`/`rxvt-unicode`/`rxvt-unicode-256color`, `st-256color` (suckless st), `gnome-terminal`, `xfce4-terminal`, `lxterminal`, `terminator`, `tilix`, `sakura`, `terminology`, `guake`, `tilda`, `deepin-terminal`, `eterm`, `putty`, and `Windows Terminal`. (Most Linux desktop terminals are VTE-based and lack OSC 1337.) Terminals using native OSC 1337 — iTerm2, WezTerm, Konsole, Rio, Contour — are deliberately absent from this list.
+
 ## Supported formats
 
 Rasters: GeoTIFF (.tif, .tiff); PNG, JPEG (.png, .jpg, .jpeg); NetCDF (.nc); HDF5 (.h5, .hdf5); HDF4 (.hdf, requires GDAL with HDF4 support); single-band or multi-band composites.

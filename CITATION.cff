@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+title: "viewinline"
+abstract: >-
+  A tiny, non-interactive command-line viewer that displays rasters/photos,
+  vectors, and tabular data (CSV/Parquet) inline in the terminal — no GUI,
+  no X11, and no file downloads. Designed for quick visual inspection at the
+  command line, and especially useful on HPC systems and remote servers over
+  SSH, where images render on the local terminal.
+type: software
+authors:
+  - given-names: Keiko
+    family-names: Nomura
+    # orcid: "https://orcid.org/0000-0000-0000-0000"   # optional: add if you have one
+  - given-names: Filip
+    family-names: Kral
+    # orcid: "https://orcid.org/0000-0000-0000-0000"   # optional: add if you have one
+repository-code: "https://github.com/nkeikon/inlineviewer"
+url: "https://github.com/nkeikon/inlineviewer"
+license: Apache-2.0
+version: 0.3.2
+date-released: 2026-06-06
+# ---------------------------------------------------------------------------
+# The DOI below is the VERSION DOI for v0.3.2 (a specific archived snapshot).
+# To make citations always resolve to your LATEST release, replace it with the
+# Zenodo CONCEPT / "all versions" DOI, shown on the record under "Cite all
+# versions". The version DOI stays useful in `identifiers` for reproducibility.
+# ---------------------------------------------------------------------------
+doi: "10.5281/zenodo.20564266"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.20564266"
+    description: "Zenodo archive of version v0.3.2"
+keywords:
+  - geospatial
+  - raster
+  - vector
+  - terminal
+  - command-line
+  - visualization
+  - GeoTIFF
+  - NetCDF
+  - GeoParquet
+  - remote-sensing
