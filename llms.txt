@@ -1,0 +1,198 @@
+# viewinline
+
+> A tiny, non-interactive command-line viewer that displays rasters/photos, vectors, and tabular data (CSV/Parquet) inline in your terminal — no GUI, no X11, no file downloads. Think of it as `ls` for geospatial files: built for quick visual inspection at the command line, not a replacement for QGIS/ArcGIS or analytical workflows. Especially useful on HPC systems and remote servers over SSH, where images render on your *local* terminal.
+
+- Package: `viewinline` (PyPI: https://pypi.org/project/viewinline/)
+- Repo: https://github.com/nkeikon/inlineviewer
+- Command name: `viewinline`
+- Requires: Python 3.9+
+- License: Apache-2.0 © 2026 Keiko Nomura
+- Latest release: v0.3.2 (2026-06-06)
+- Combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**: no zoom/pan/colormap-switching on the fly. Everything is controlled via CLI options (e.g. `--display`, `--color-by`, `--colormap`).
+
+## Installation
+
+```
+pip install viewinline
+pip install --upgrade viewinline          # upgrade
+pip install --upgrade "viewinline[netcdf]"  # with hyperspectral/NetCDF extras
+```
+
+Optional extras (install only if needed):
+- `duckdb` — required for `--where`, `--sort`, `--select`, `--limit`, `--sql`. `pip install duckdb`
+- `pyarrow` — required for Parquet/GeoParquet. `pip install pyarrow`
+- `h5py` — fallback for HDF5 if GDAL lacks HDF5 support (usually unnecessary). `pip install h5py`
+- `chafa` — system binary (not a Python package); strongly recommended for terminal coverage beyond the native list. See "Terminals".
+
+## How display works (rendering engines)
+
+- Uses the **iTerm2 inline image protocol (OSC 1337)** natively in supported terminals.
+- Falls back to **`chafa`** elsewhere, which routes through each terminal's best protocol: real high-res images via the kitty graphics protocol or sixel in some terminals, and 24-bit colored block-art (ASCII-art) previews in others.
+- Without `chafa`, terminals outside the native list show an info message instead of an image.
+- Force the chafa path on any terminal with the env var `INLINE_VIEWER_ENGINE=chafa`.
+
+## Terminals
+
+Native (no extra install, via OSC 1337): iTerm2 (macOS), WezTerm, Konsole (KDE), Rio, Contour.
+
+Via `chafa` (recommended for everyone else):
+- Real high-res images (kitty graphics protocol / sixel): kitty, Ghostty, foot.
+- Colored block-art previews (24-bit color): Terminal.app, VS Code, GNOME Terminal, Alacritty, Warp, Hyper, most Linux terminals.
+
+Install chafa once (system binary, works across all conda/virtualenv environments):
+```
+brew install chafa        # macOS
+sudo apt install chafa     # Debian/Ubuntu
+sudo dnf install chafa     # Fedora
+scoop install chafa        # Windows
+```
+
+- **SSH/HPC:** Works over SSH when connecting from a compatible terminal. Images render on the *local* machine, not the remote server. No X11 forwarding or VNC required.
+- **tmux/screen:** Full inline images work inside tmux only when the *outer* terminal is iTerm2 (or WezTerm/Konsole/Rio/Contour). With other outer terminals (kitty, Terminal.app, etc.), viewinline shows ASCII/block-art previews instead.
+- **Windows:** For real images, use Windows Terminal (v1.22+) or WezTerm. Stock PuTTY can show block-art via chafa.
+
+## Supported formats
+
+Rasters: GeoTIFF (.tif, .tiff); PNG, JPEG (.png, .jpg, .jpeg); NetCDF (.nc); HDF5 (.h5, .hdf5); HDF4 (.hdf, requires GDAL with HDF4 support); single-band or multi-band composites.
+
+Vectors: GeoJSON (.geojson), Shapefile (.shp), GeoPackage (.gpkg), Parquet/GeoParquet (.parquet, .geoparquet).
+
+Tabular: CSV (.csv), Parquet (.parquet, requires pyarrow). All CSV operations work on Parquet.
+
+HDF/NetCDF notes:
+- HDF5 (.h5/.hdf5): via rasterio if GDAL has HDF5 support (most installs).
+- HDF4 (.hdf): requires GDAL compiled with HDF4 support (legacy MODIS / older NASA products).
+- NetCDF (.nc): via rasterio (GDAL's NetCDF driver).
+- viewinline lists only variables displayable as 2D or 3D arrays. 3D variables with time or known spatial dims are auto-handled (sliced along the non-spatial axis). Variables with 4+ dimensions are not supported. For a full variable list, use `ncdump -h file.nc` or `viewtif`.
+
+## Usage examples
+
+Rasters:
+```
+viewinline path/to/file.tif
+viewinline R.tif G.tif B.tif                       # RGB composite (also via --rgbfiles)
+viewinline path/to/multiband.tif --rgb 3 2 1
+viewinline path/to/folder --gallery 4x3            # gallery of all images in a folder
+viewinline path/to/hyperspectral.tif --bands 10-50 # gallery of selected bands (also --bands 11,15,30,45)
+```
+
+NetCDF / HDF:
+```
+viewinline file.nc                                 # list variables
+viewinline file.nc --subset 2                      # display variable 2
+viewinline file.nc --subset 1 --band 10            # variable 1, timestep 10 (--band or --timestep)
+viewinline temp.nc --subset 1 --colormap plasma --vmin 273 --vmax 310
+viewinline hyperspectral.nc --subset 1 --reduce NumberOfScanlines  # override auto-detected axis
+viewinline hyperspectral.nc --subset 22 --band 50
+viewinline hyperspectral.nc --subset 22 --bands 10-54 --gallery 5x11
+```
+
+Vectors:
+```
+viewinline path/to/vector.geojson
+viewinline boundaries.geoparquet --color-by population --colormap viridis
+```
+
+CSV / Parquet:
+```
+viewinline data.csv                                # preview rows and columns
+viewinline data.parquet --describe                 # summary statistics
+viewinline data.csv --hist                         # histograms for all numeric columns
+viewinline data.csv --hist area_km2                # histogram for one column
+viewinline data.csv --scatter X Y                  # scatter plot
+viewinline data.csv --where "year > 2010"          # filter rows (DuckDB)
+viewinline data.csv --sort population --desc       # sort rows
+viewinline data.csv --sql "SELECT * FROM data WHERE area > 100 ORDER BY year"  # full SQL; table name is 'data'
+```
+
+Tabular view of vectors (`--table` unlocks CSV-style ops on any vector file):
+```
+viewinline counties.shp --table
+viewinline counties.shp --table --describe
+viewinline counties.shp --table --unique STATE_NAME
+viewinline data.geoparquet --table --where "POP > 100000" --sort POP --desc
+```
+
+## CLI options
+
+General:
+- `--display DISPLAY` — resize only the displayed image (0.5 = smaller, 2 = bigger). Default: auto-fit to terminal.
+
+Raster:
+- `--band BAND` — band number for a single raster, or slice number for NetCDF (default: 1).
+- `--bands BANDS` — display multiple bands as a grid. Accepts ranges (`30-40`), lists (`3,4,5`), or mixed (`1,5,10-15`).
+- `--rgb R G B` — three band numbers for RGB display (e.g. `--rgb 4 3 2`); overrides default `1 2 3`. Accepts space- or comma-separated values (`--rgb 4 3 2` or `--rgb 4,3,2`).
+- `--rgbfiles R G B` — three single-band rasters for an RGB composite (can also be given as positional args).
+- `--timestep INTEGER` — alias for `--band` with NetCDF files.
+- `--subset INTEGER` — variable index for NetCDF/HDF files (e.g. `--subset 1`).
+- `--reduce DIM_NAME` — for 3D NetCDF variables, choose which dimension is the band/slider axis. Auto-detected if omitted.
+- `--colormap` — apply colormap to single-band rasters; flag with no value → `terrain`.
+- `--vmin VMIN` / `--vmax VMAX` — pixel value range for display scaling (each works independently).
+- `--nodata NODATA` — override nodata value when dataset metadata is missing/incorrect.
+- `--gallery [GRID]` — display all PNG/JPG/TIF images in a folder as thumbnails (e.g. `5x5`).
+
+Vector:
+- `--color-by COLUMN` — color features by a column.
+- `--colormap` — apply colormap to vector coloring; flag with no value → `terrain`.
+- `--width WIDTH` — line width for vector boundaries (default: 0.7).
+- `--edgecolor COLOR` — edge color for outlines, hex or named (default: white).
+- `--layer LAYER` — layer name for GeoPackage/multi-layer files, or variable name for NetCDF.
+- `--table` — display a vector/parquet file as tabular data instead of rendering geometry.
+
+CSV / Parquet:
+- `--describe [COLUMN]` — summary statistics for all numeric columns or one named column.
+- `--hist [COLUMN]` — histograms for all numeric columns or one named column.
+- `--bins BINS` — number of histogram bins (with `--hist`; default: 20).
+- `--scatter X Y` — scatter plot of two numeric columns.
+- `--unique COLUMN` — unique values for a categorical column.
+- `--where EXPR` — filter rows with a SQL WHERE clause (DuckDB). Example: `--where "year > 2010"`.
+- `--sort COLUMN` — sort by column (ascending by default; use `--desc`).
+- `--desc` — descending sort (with `--sort`).
+- `--limit N` — limit number of rows shown.
+- `--select COLUMNS` — select specific columns, space-separated. Example: `--select Country City`.
+- `--sql QUERY` — full DuckDB SQL query; use `data` as the table name. Example: `--sql "SELECT * FROM data WHERE Poverty > 40"`.
+
+Help text is grouped into sections: General, Raster, Vector, and Tabular.
+
+## Behavior notes (current)
+
+- Multi-band rasters (multispectral, hyperspectral, embeddings) are NOT auto-composited as RGB. Band 1 is shown in grayscale by default (consistent with NetCDF). Use `--rgb` to composite explicitly. `--band N` shows any single band N (including band 1).
+- `--gallery` silently skips incompatible/non-image files instead of failing the whole run.
+- In chafa/ASCII terminals, band labels and gallery filenames are printed as a text grid *after* the image (labels drawn on the canvas are unreadable there), so you can tell tiles/files apart.
+- `--bands` tiles are labeled with their band number; default colormap for `--bands` is viridis (override with `--colormap`). Works with GeoTIFF and NetCDF.
+- For large CSV or filtered results, viewinline prompts `Show first N or all? [first/all]`.
+- `--vmin` and `--vmax` are independent — setting only one no longer falls back to auto-scaling on both ends.
+
+## Hyperspectral / non-standard NetCDF
+
+viewinline can open NetCDF files that organize variables under hierarchical groups (e.g. `/radiometric_data/CalibratedRadianceData`), use non-standard dimension names (`NumberOfChannels`, `NumberOfScanlines`, etc.), or have malformed CF attributes (e.g. per-band `scale_factor` arrays that xarray's default decoding can't handle).
+
+Band-axis detection for 3D variables is tiered: user override (`--reduce`) → standard convention (lat/lon detected) → smallest-dimension fallback. If auto-detection picks the wrong axis, set it explicitly:
+```
+viewinline PICARDL1B.nc --subset 22 --band 50
+viewinline file.nc --subset 1 --reduce DIM_NAME
+```
+Tested on NASA PICARD L1B; the same pattern should apply to AVIRIS, EMIT, and similar instruments.
+
+## Dependencies
+
+Core (installed automatically): `rasterio` (raster reading, includes GDAL), `geopandas` + `pyogrio` (vector reading), `matplotlib` (vector rendering), `Pillow` (image encoding), `numpy`, `pandas`.
+
+Optional: `chafa` (terminal coverage; system binary), `duckdb` (filter/sort/SQL), `pyarrow` (Parquet/GeoParquet), `h5py` (HDF5 fallback).
+
+## Version history (selected)
+
+- **v0.3.2 (2026-06-06):** Band labels and gallery filenames shown as a text grid after the image in chafa/ASCII terminals; `--gallery NxM` now works with `--bands` for NetCDF; `--rgb` works with NetCDF when used with `--subset`; `--vmin`/`--vmax` work independently; `--rgb` accepts comma-separated values; help text grouped into sections; large-CSV prompt changed to `Show first N or all? [first/all]`.
+- **v0.3.1 (2026-06-02):** New `--bands` flag (gallery grid of multiple bands; ranges/lists/mixed; per-tile band-number labels; viridis default); `--gallery` now silently skips incompatible files; multi-band rasters no longer auto-composite as RGB (band 1 grayscale by default — use `--rgb`).
+- **v0.3.0 (2026-05-15):** Hyperspectral NetCDF support (hierarchical groups, non-standard dimension names, malformed CF attributes); new `--reduce` flag; tiered dimension detection; fixed `--band 1` being overridden by RGB auto-composite on multi-band TIFFs; consistent `(downsampled)` label; `[netcdf]` install extra.
+- **v0.2.3 (2026-05-13):** Broad terminal support via chafa (real high-res on kitty/foot; block-art elsewhere); fixed Apple_Terminal / `xterm-kitty` misdetection; reliable block-art inside tmux. chafa fallback contributed by @filipkral.
+- **v0.2.2 (2026-04-22):** Added Zenodo DOI for citation.
+- **v0.2.1 (2026-02-21):** NetCDF/HDF support (`--subset`, `--band`/`--timestep`, auto nodata, HDF4 via GDAL); Parquet/GeoParquet; `--table` for vectors; `--rgb 3 2 1` syntax + `--rgbfiles`; auto edge-color removal when coloring by column.
+- **v0.2.0 (2026-02-17):** Inline-only display (OSC 1337); removed ANSI fallback and /tmp save; DuckDB integration for `--where`/`--sort`/`--select`/`--limit`/`--sql`; license switched MIT → Apache-2.0.
+- **v0.1.5 (2026-02-13):** Fixed duplicate band-display prints; optimized uint8 normalization; minor perf.
+
+## Support & links
+
+- NASA staff can ask usage questions via the documentation-based assistant "viewtif + viewgeom + viewinline Helper" in the ChatGSFC Agent Marketplace.
+- YouTube demo playlist: https://www.youtube.com/playlist?list=PLP9MNCMgJIHj6FvahJ6Tembp1rCyhLtR4
+- Releases: https://github.com/nkeikon/inlineviewer/releases
