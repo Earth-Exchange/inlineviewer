@@ -1,13 +1,13 @@
 # viewinline
 
-> A tiny, non-interactive command-line viewer that displays rasters/photos, vectors, and tabular data (CSV/Parquet) inline in your terminal — no GUI, no X11, no file downloads. Think of it as `ls` for geospatial files: built for quick visual inspection at the command line, not a replacement for QGIS/ArcGIS or analytical workflows. Especially useful on HPC systems and remote servers over SSH, where images render on your *local* terminal.
+> A tiny, non-interactive command-line viewer that displays rasters/photos, vectors, and tabular data (CSV/Parquet) inline in your terminal — no GUI, no X11, no file downloads. Think of it as `ls` for geospatial files: built for quick visual inspection at the command line, not a replacement for QGIS/ArcGIS or analytical workflows. Especially useful on HPC systems and remote servers over SSH, where images render on your *local* terminal. Also provides agent-facing `--info` (metadata as JSON) and `--export` (save the rendered image) for AI coding-agent workflows.
 
 - Package: `viewinline` (PyPI: https://pypi.org/project/viewinline/)
 - Repo: https://github.com/nkeikon/inlineviewer
 - Command name: `viewinline`
 - Requires: Python 3.9+
 - License: Apache-2.0 © 2026 Keiko Nomura
-- Latest release: v0.3.2 (2026-06-06)
+- Latest release: v0.4.0 (2026-06-06)
 - Combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**: no zoom/pan/colormap-switching on the fly. Everything is controlled via CLI options (e.g. `--display`, `--color-by`, `--colormap`).
 
 ## Installation
@@ -134,7 +134,8 @@ viewinline data.geoparquet --table --where "POP > 100000" --sort POP --desc
 
 General:
 - `--display DISPLAY` — resize only the displayed image (0.5 = smaller, 2 = bigger). Default: auto-fit to terminal.
-
+- `--info` — print file metadata as JSON, then exit (no image drawn). Works with rasters (GeoTIFF, NetCDF, HDF) and vectors (GeoJSON, Shapefile, GeoPackage, GeoParquet). For NetCDF/HDF, lists variables; combine with `--subset N` to inspect one. Always returns JSON, including a `{"readable": false, "error": ...}` object on unreadable input. Aimed at AI coding agents.
+- `--export PATH` — save the rendered image to PATH (`.png`/`.jpg`, chosen by extension) and open it; prints `{"path": "..."}` as the final line. Works with any display flag (`--rgb`, `--colormap`, `--band`, `--display`), saving exactly what viewinline would render. Useful for saving quick-looks and for AI agents inspecting outputs visually.
 Raster:
 - `--band BAND` — band number for a single raster, or slice number for NetCDF (default: 1).
 - `--bands BANDS` — display multiple bands as a grid. Accepts ranges (`30-40`), lists (`3,4,5`), or mixed (`1,5,10-15`).
@@ -170,6 +171,33 @@ CSV / Parquet:
 - `--sql QUERY` — full DuckDB SQL query; use `data` as the table name. Example: `--sql "SELECT * FROM data WHERE Poverty > 40"`.
 
 Help text is grouped into sections: General, Raster, Vector, and Tabular.
+
+## AI-agent inspection (`--info`, `--export`)
+
+Two commands for AI coding-agent workflows (Claude Code, Codex, Cursor, and similar): an agent can confirm its code *ran* but not whether the geospatial file it produced is *sensible* (wrong CRS, unexpected dimensions, all-NoData, NaN/Inf values, flipped output). These answer "what did I create?" and "what does it look like?" as machine-readable JSON. Both are deterministic and local — no LLM dependency, no external API calls.
+
+`--info` reports facts, not judgments, choosing fields per format:
+- Rasters (GeoTIFF, NetCDF, HDF): format, dimensions, bands, dtype, CRS, resolution, bounds, nodata, per-band statistics (min/max/mean, valid_fraction, naninf_fraction).
+- Vectors (GeoJSON, Shapefile, GeoPackage, GeoParquet): feature count, geometry type, CRS, bounds, columns.
+
+viewinline result.tif --info # raster metadata + stats as JSON
+viewinline boundaries.geojson --info # vector: features, geometry, CRS, columns
+viewinline data.nc --info # list NetCDF variables
+viewinline data.nc --subset 7 --info # inspect variable 7 (dims, dtype, units, stats)
+viewinline scene.hdf --subset 1 --info # inspect HDF subdataset 1
+
+Output notes:
+- `crs` is an `EPSG:code` when one can be resolved, WKT when the CRS has no EPSG code (e.g. MODIS Sinusoidal), or `null` when absent.
+- Statistics exclude NoData and non-finite pixels; large rasters are sampled (`"method": "sampled"`), small ones read in full (`"method": "full"`).
+- Files with many bands report a capped subset (`bands_reported` < `bands_total`, plus a `note`); missing per-band stats do not imply a problem.
+- Errors return structured JSON (`{"readable": false, "error": ...}`) rather than crashing, so callers can always parse the result.
+
+`--export` saves what viewinline would render to PNG/JPEG and prints `{"path": "..."}`:
+viewinline result.tif --export out.png
+viewinline scene.tif --rgb 4 3 2 --export rgb.png
+viewinline dem.tif --colormap terrain --display 1 --export dem.png # full-res with colormap
+
+Neither command claims the scientific result is *correct* — that judgment stays with the agent.
 
 ## Behavior notes (current)
 
@@ -207,6 +235,7 @@ Optional: `chafa` (terminal coverage; system binary), `duckdb` (filter/sort/SQL)
 - **v0.2.1 (2026-02-21):** NetCDF/HDF support (`--subset`, `--band`/`--timestep`, auto nodata, HDF4 via GDAL); Parquet/GeoParquet; `--table` for vectors; `--rgb 3 2 1` syntax + `--rgbfiles`; auto edge-color removal when coloring by column.
 - **v0.2.0 (2026-02-17):** Inline-only display (OSC 1337); removed ANSI fallback and /tmp save; DuckDB integration for `--where`/`--sort`/`--select`/`--limit`/`--sql`; license switched MIT → Apache-2.0.
 - **v0.1.5 (2026-02-13):** Fixed duplicate band-display prints; optimized uint8 normalization; minor perf.
+- **v0.4.0 (2026-08-23):** New agent-facing inspection commands: `--info` (file metadata + statistics as JSON, for rasters and vectors; lists variables for NetCDF/HDF with `--subset`; always returns JSON including structured errors) and `--export` (save the rendered image to PNG/JPEG, works with any display flag). Existing viewer behavior unchanged.
 
 ## Support & links
 

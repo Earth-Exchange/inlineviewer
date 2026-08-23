@@ -2,7 +2,7 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
   "projectTitle": "viewinline",
-  "description": "Terminal inline geospatial preview tool for rasters and vectors over SSH and HPC workflows.",
+  "description": "Terminal inline geospatial preview tool for rasters and vectors over SSH and HPC workflows, with machine-readable --info and --export for AI-agent file inspection.",
   "excludeFolders": [
     "tests",
     "examples/large-data",
@@ -13,7 +13,8 @@
     "Prefer SSH and terminal-based workflows in examples.",
     "Use inline terminal image rendering instead of GUI workflows.",
     "Highlight support for GeoTIFF, NetCDF, GeoJSON, and GeoParquet.",
-    "Emphasize compatibility limitations for terminal graphics protocols."
+    "Emphasize compatibility limitations for terminal graphics protocols.",
+    "For programmatic or AI-agent use, note --info (JSON metadata) and --export (save rendered image)."
   ]
 }
 ```

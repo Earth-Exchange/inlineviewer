@@ -24,6 +24,7 @@ from PIL import Image, ImageOps, ImageDraw, ImageFont
 from matplotlib import colormaps
 import matplotlib as mpl
 import subprocess
+import json
 
 import warnings
 
@@ -31,7 +32,10 @@ warnings.filterwarnings("ignore", message="More than one layer found", category=
 warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
 warnings.filterwarnings("ignore", message="invalid scale_factor or add_offset attribute", category=UserWarning)
 
-__version__ = "0.3.2"
+_EXPORT_PATH = None
+_EXPORT_RESULT = None
+
+__version__ = "0.4.0"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -203,25 +207,42 @@ def show_inline_image(image_array: np.ndarray, display_scale = None, is_vector: 
     
     sys.stdout.flush()
 
+def _open_in_viewer(path: str) -> None:
+    """Open a file in the OS default viewer. Best-effort; ignores failures."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", path], check=False)
+        elif sys.platform.startswith("linux"):
+            subprocess.run(["xdg-open", path], check=False)
+        elif sys.platform.startswith("win"):
+            os.startfile(path)
+    except Exception:
+        pass
+
 def show_image_auto(img: np.ndarray, display_scale=None, is_vector: bool = False) -> None:
-    """Render an image inline, with chafa fallback for non-iTerm2 terminals.
-    
-    Cascade:
-      1. If terminal supports OSC 1337 → emit iTerm2 inline image sequence.
-      2. Else if chafa is installed → pipe through chafa (which auto-detects
-         and emits the terminal's native graphics protocol or block-art).
-      3. Else → print an info message suggesting chafa installation.
-    
-    The branching happens inside show_inline_image(); this wrapper handles
-    status messaging and exception safety.
-    """
+    global _EXPORT_RESULT
+    # Export mode: save the image, open it in the OS viewer, skip inline render.
+    if _EXPORT_PATH:
+        try:
+            out = Image.fromarray(img)
+            ext = os.path.splitext(_EXPORT_PATH)[1].lower()
+            if ext in (".jpg", ".jpeg"):
+                out.convert("RGB").save(_EXPORT_PATH, quality=90)
+            else:
+                out.save(_EXPORT_PATH)
+            saved_path = os.path.abspath(_EXPORT_PATH)
+            _open_in_viewer(saved_path)
+            _EXPORT_RESULT = {"path": saved_path}
+        except Exception as e:
+            _EXPORT_RESULT = {"error": str(e)}
+        return
+
     try:
         show_inline_image(img, display_scale, is_vector)
         if _TERMINAL_SUPPORTS_IMAGES:
             print("[VIEW] Inline render complete")
         elif is_chafa_available():
             print("[VIEW] Inline render complete via chafa")
-        # If neither path applies, show_inline_image already printed the info message
     except Exception as e:
         print(f"[ERROR] Failed to render image: {e}")
         import traceback
@@ -273,7 +294,255 @@ def parse_rgb(values: list[str]) -> list[int]:
     except ValueError:
         print("[WARN] --rgb requires exactly 3 band numbers. e.g. --rgb 4 3 2 or --rgb 4,3,2")
         return None
-    
+
+def print_raster_info(path: str, subset: int = None) -> int:
+    """Agent-facing: print JSON metadata + basic stats for a raster. Returns exit code."""
+    try:
+        import rasterio
+        from rasterio.enums import Resampling
+    except ImportError:
+        print(json.dumps({"error": "rasterio not installed", "readable": False}))
+        return 1
+
+    # Resolve subdataset selection for HDF/NetCDF containers
+    if subset is not None and path.lower().endswith((".nc", ".hdf", ".hdf5", ".h5")):
+        try:
+            with rasterio.open(path) as ds:
+                subs = ds.subdatasets
+            if subs:
+                if subset < 1 or subset > len(subs):
+                    print(json.dumps({"error": f"--subset must be between 1 and {len(subs)}",
+                                      "readable": False, "subdataset_count": len(subs)}))
+                    return 1
+                # path = subs[subset - 1]
+                path = subs[subset - 1]
+                subset_var = path.split(":")[-1]                
+        except Exception as e:
+            print(json.dumps({"error": str(e), "readable": False}))
+            return 1
+
+    try:
+        with rasterio.open(path) as ds:
+            # Container with no directly-readable bands (e.g. HDF/NetCDF without --subset)
+            if ds.count == 0:
+                subs = ds.subdatasets
+                print(json.dumps({
+                    "format": ds.driver,
+                    "filename": os.path.basename(path),
+                    "readable": False,
+                    "error": "no directly-readable bands (file has subdatasets)",
+                    "subdataset_count": len(subs),
+                    "note": "Use --subset N to inspect a specific subdataset.",
+                }))
+                return 1
+
+            if ds.crs:
+                epsg = ds.crs.to_epsg() or ds.crs.to_epsg(confidence_threshold=20)
+                crs_str = f"EPSG:{epsg}" if epsg else ds.crs.to_string()
+            else:
+                crs_str = None
+
+            info = {
+                "format": ds.driver,
+                "filename": os.path.basename(path),
+                "dimensions": [ds.width, ds.height],
+                "bands": ds.count,
+                "dtype": ds.dtypes[0],
+                "crs": crs_str,
+                "resolution": [abs(ds.transform.a), abs(ds.transform.e)],
+                "bounds": [ds.bounds.left, ds.bounds.bottom, ds.bounds.right, ds.bounds.top],
+                "nodata": ds.nodata,
+            }
+
+            H, W = ds.height, ds.width
+            cap = 1024
+            sampled = max(H, W) > cap
+            if sampled:
+                s = cap / max(H, W)
+                out_shape = (max(1, int(H * s)), max(1, int(W * s)))
+
+            MAX_BANDS = 20
+            n_report = min(ds.count, MAX_BANDS)
+            per_band = []
+            for b in range(1, n_report + 1):
+                if sampled:
+                    arr = ds.read(b, out_shape=out_shape,
+                                  resampling=Resampling.nearest).astype("float64")
+                else:
+                    arr = ds.read(b).astype("float64")
+
+                valid = np.isfinite(arr)
+                if ds.nodata is not None:
+                    valid &= (arr != ds.nodata)
+                n_total, n_valid = arr.size, int(valid.sum())
+
+                bs = {"band": b}
+                if n_valid:
+                    v = arr[valid]
+                    bs.update({"min": float(v.min()), "max": float(v.max()), "mean": float(v.mean())})
+                else:
+                    bs.update({"min": None, "max": None, "mean": None})
+                bs["valid_fraction"] = round(n_valid / n_total, 4) if n_total else 0.0
+                bs["naninf_fraction"] = round(int((~np.isfinite(arr)).sum()) / n_total, 4) if n_total else 0.0
+                per_band.append(bs)
+
+            stats_block = {
+                "method": "sampled" if sampled else "full",
+                "bands_total": ds.count,
+                "bands_reported": n_report,
+                "per_band": per_band,
+            }
+            if n_report < ds.count:
+                stats_block["band_sampling"] = "first_n"
+                stats_block["note"] = (f"Showing bands 1-{n_report} of {ds.count}. "
+                                       f"Remaining bands not analyzed; absence of stats does not imply a problem.")
+            info["statistics"] = stats_block
+
+            try:
+                info["storage"] = {
+                    "tiled": bool(ds.profile.get("tiled", False)),
+                    "compression": ds.compression.value if ds.compression else None,
+                    "overviews": ds.overviews(1),
+                }
+            except Exception:
+                pass
+
+            print(json.dumps(info))
+            return 0
+    except Exception as e:
+        print(json.dumps({"error": str(e), "readable": False}))
+        return 1
+
+def print_netcdf_info(path: str, subset: int = None) -> int:
+    """Agent-facing: JSON metadata for a NetCDF file via netCDF4 (matches viewer's variable indexing)."""
+    try:
+        import netCDF4
+    except ImportError:
+        print(json.dumps({"error": "netCDF4 not installed", "readable": False}))
+        return 1
+    try:
+        nc = netCDF4.Dataset(path)
+    except Exception as e:
+        print(json.dumps({"error": str(e), "readable": False}))
+        return 1
+
+    # Same recursive enumeration the renderer uses, so indices match
+    def collect_vars(group, prefix=""):
+        out = []
+        for name, var in group.variables.items():
+            out.append((f"{prefix}{name}", var))
+        for sub_name, sub in group.groups.items():
+            out.extend(collect_vars(sub, f"{prefix}{sub_name}/"))
+        return out
+
+    all_vars = collect_vars(nc)
+    if not all_vars:
+        print(json.dumps({"error": "no variables found", "readable": False}))
+        nc.close()
+        return 1
+
+    # No --subset: list variables (mirrors the viewer's listing)
+    if subset is None:
+        variables = [{
+            "index": i,
+            "name": name,
+            "shape": list(var.shape),
+            "dtype": str(var.dtype),
+            "dimensions": list(var.dimensions),
+        } for i, (name, var) in enumerate(all_vars, 1)]
+        print(json.dumps({
+            "format": "netCDF",
+            "filename": os.path.basename(path),
+            "variable_count": len(all_vars),
+            "variables": variables,
+            "note": "Use --subset N to inspect a specific variable.",
+        }))
+        nc.close()
+        return 0
+
+    # --subset given: inspect that variable
+    if subset < 1 or subset > len(all_vars):
+        print(json.dumps({"error": f"--subset must be between 1 and {len(all_vars)}",
+                          "readable": False, "variable_count": len(all_vars)}))
+        nc.close()
+        return 1
+
+    var_name, var = all_vars[subset - 1]
+    info = {
+        "format": "netCDF",
+        "filename": os.path.basename(path),
+        "subset": subset,
+        "variable": var_name,
+        "shape": list(var.shape),
+        "dtype": str(var.dtype),
+        "dimensions": list(var.dimensions),
+    }
+
+    # Attributes worth surfacing if present
+    for attr in ("units", "long_name", "standard_name"):
+        if hasattr(var, attr):
+            info[attr] = str(getattr(var, attr))
+
+    fill = getattr(var, "_FillValue", None)
+    info["fill_value"] = float(fill) if fill is not None else None
+
+    # Stats on a sample: read one slice if 3D+, or the whole thing if small 2D/1D
+    try:
+        if var.ndim >= 3:
+            # sample first slice along axis 0 to avoid loading the full cube
+            arr = np.asarray(var[0], dtype="float64")
+            stats_scope = f"first slice along '{var.dimensions[0]}' (of {var.shape[0]})"
+        else:
+            arr = np.asarray(var[:], dtype="float64")
+            stats_scope = "full variable"
+
+        valid = np.isfinite(arr)
+        if fill is not None:
+            valid &= (arr != fill)
+        n_total, n_valid = arr.size, int(valid.sum())
+        stats = {"scope": stats_scope}
+        if n_valid:
+            v = arr[valid]
+            stats.update({"min": float(v.min()), "max": float(v.max()), "mean": float(v.mean())})
+        else:
+            stats.update({"min": None, "max": None, "mean": None})
+        stats["valid_fraction"] = round(n_valid / n_total, 4) if n_total else 0.0
+        stats["naninf_fraction"] = round(int((~np.isfinite(arr)).sum()) / n_total, 4) if n_total else 0.0
+        info["statistics"] = stats
+    except Exception as e:
+        info["statistics"] = {"error": str(e)}
+
+    print(json.dumps(info))
+    nc.close()
+    return 0
+
+def print_vector_info(path: str) -> int:
+    try:
+        import geopandas as gpd
+    except ImportError:
+        print(json.dumps({"error": "geopandas not installed", "readable": False}))
+        return 1
+    try:
+        if path.lower().endswith((".parquet", ".geoparquet")):
+            gdf = gpd.read_parquet(path)
+        else:
+            gdf = gpd.read_file(path)
+        b = gdf.total_bounds  # [minx, miny, maxx, maxy]
+        info = {
+            "format": "vector",
+            "filename": os.path.basename(path),
+            "features": len(gdf),
+            "geometry_type": str(gdf.geom_type.iloc[0]) if len(gdf) else None,
+            "crs": (f"EPSG:{gdf.crs.to_epsg()}" if gdf.crs and gdf.crs.to_epsg()
+                    else (gdf.crs.to_string() if gdf.crs else None)),
+            "bounds": [float(x) for x in b],
+            "columns": [c for c in gdf.columns if c != gdf.geometry.name],
+        }
+        print(json.dumps(info))
+        return 0
+    except Exception as e:
+        print(json.dumps({"error": str(e), "readable": False}))
+        return 1
 # ---------------------------------------------------------------------
 # CSV handling
 # ---------------------------------------------------------------------
@@ -1491,7 +1760,8 @@ def render_vector(path, args):
 # ---------------------------------------------------------------------
 import argparse
 
-class SmartDefaults(argparse.ArgumentDefaultsHelpFormatter):
+class SmartDefaults(argparse.ArgumentDefaultsHelpFormatter,
+                    argparse.RawDescriptionHelpFormatter):
     """Show defaults only when meaningful (not None or SUPPRESS)."""
     def _get_help_string(self, action):
         if action.help and "%(default)" in action.help:
@@ -1662,8 +1932,16 @@ def main() -> None:
             "Supports rasters (.tif, .tiff, .png, .jpg, .jpeg), "
             "vectors (.shp, .geojson, .gpkg), and CSV preview.\n"
             "Sends iTerm2 inline image protocol — visible in compatible terminals."
+            ),
+        formatter_class=SmartDefaults,
+        epilog=(
+            "Agent interface (machine-readable JSON):\n"
+            "  viewinline result.tif --info                 # metadata + stats as JSON\n"
+            "  viewinline result.tif --export out.png       # save PNG, print {\"path\": ...}\n"
+            "  viewinline data.nc --info                    # list NetCDF variables\n"
+            "  viewinline data.nc --subset 7 --info         # inspect variable 7\n"
+            "  viewinline scene.hdf --subset 1 --info       # inspect HDF subdataset 1\n"
         ),
-        formatter_class=SmartDefaults
     )
 
 # File input
@@ -1682,6 +1960,11 @@ def main() -> None:
         "--gallery", nargs="?", const="4x4", metavar="GRID",
         help="Display all image files in a folder as thumbnails (e.g., --gallery 5x4). Incompatible files are skipped."
     )
+    general.add_argument("--info", action="store_true",
+    help="Print JSON metadata (format, CRS, dims, stats) and exit. Agent-facing.")
+    
+    general.add_argument("--export", metavar="PATH", default=None,
+    help="Also save the displayed image to PATH (.png/.jpg). Prints {\"path\": ...}.")
 
     # Raster options
     raster = parser.add_argument_group("Raster")
@@ -1826,6 +2109,28 @@ def main() -> None:
                 sys.exit(1)
 
     paths = args.paths
+
+    if args.info:
+        if len(paths) != 1:
+            print(json.dumps({"error": "--info requires exactly one file"}))
+            sys.exit(1)
+        p = paths[0].lower()
+        vector_exts = (".shp", ".geojson", ".json", ".gpkg", ".parquet", ".geoparquet")
+        if p.endswith(".nc"):
+            sys.exit(print_netcdf_info(paths[0], subset=args.subset))
+        if p.endswith(vector_exts):
+            sys.exit(print_vector_info(paths[0]))
+        sys.exit(print_raster_info(paths[0], subset=args.subset))
+        
+    if args.export:
+        globals()["_EXPORT_PATH"] = args.export
+        import atexit
+        _real_stdout = sys.stdout
+        sys.stdout = sys.stderr  # send [DATA]/[INFO] logs to stderr, keep stdout clean
+        def _emit_export_json(_out=_real_stdout):
+            sys.stdout = _out
+            print(json.dumps(_EXPORT_RESULT or {"error": "no image rendered"}))
+        atexit.register(_emit_export_json)
 
     # File routing
     raster_exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".nc", ".hdf", ".hdf5", ".h5")

@@ -48,6 +48,11 @@ viewinline hyperspectral.nc --subset 22 --bands 10-54 --gallery 5x11
 viewinline path/to/vector.geojson
 viewinline boundaries.geoparquet --color-by population --colormap viridis
 
+# Save to file
+viewinline path/to/file.tif --export out.png   # save the rendered image as PNG (or .jpg)
+viewinline scene.tif --rgb 4 3 2 --export rgb.png
+viewinline dem.tif --colormap terrain --display 1 --export dem.png   # full-res with colormap
+
 # CSV and Parquet
 viewinline data.csv                          # preview rows and columns
 viewinline data.parquet --describe           # summary statistics
@@ -101,6 +106,7 @@ You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGI
 - **NetCDF/HDF Support:** Display variables from NetCDF (.nc) and HDF5 (.h5, .hdf5) files with automatic nodata detection and multi-slice navigation
 - **Parquet/GeoParquet:** Render GeoParquet as vector maps or view as tabular data
 - **Tabular View for Vectors:** Use `--table` to access CSV-style operations (filter, sort, describe, hist) on any vector file  
+- **AI-agent inspection:** `--info` returns file metadata and statistics as JSON; `--export` saves a quick-look image for an agent to inspect. Designed for AI coding-agent workflows.
 
 ## Supported formats  
 **Rasters**  
@@ -147,6 +153,7 @@ You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGI
 - Variables with 4+ dimensions are not supported
 - For a complete variable list, use `ncdump -h file.nc` or `viewtif`
 
+
 ## Dependencies
 
 **Core dependencies** (installed automatically):
@@ -180,6 +187,8 @@ You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGI
 ```
 General:
   --display DISPLAY     Resize only the displayed image (0.5=smaller, 2=bigger). Default: auto-fit to terminal.
+  --info                Print file metadata and statistics as JSON, then exit (agent-facing). For NetCDF/HDF, lists variables; combine with --subset N to inspect one. Always returns JSON, including on error.
+  --export PATH         Save the rendered image to PATH (.png/.jpg) and open it. Works with any display flag. Prints {"path": "..."} as the final line.
 
 Raster:
   --band BAND           Band number to display (single raster), or slice number for NetCDF. (default: 1)
@@ -216,6 +225,95 @@ CSV and Parquet:
   --select COLUMNS      Select specific columns (space separated). Example: --select Country City
   --sql QUERY           Execute full DuckDB SQL query. Use 'data' as table name. Example: --sql "SELECT * FROM data WHERE Poverty > 40"
 ```
+## AI-agent inspection (`--info`, `--export`)
+
+An optional command aimed at AI coding-agent workflows (Claude Code, Codex, Cursor, and similar). An agent can confirm its code *ran*, but not whether the geospatial file it produced is *sensible* — wrong CRS, unexpected dimensions, all-NoData, NaN/Inf values, or a flipped output. `--info` answers **"what did I create?"** as machine-readable JSON.
+
+```bash
+viewinline result.tif --info                 # metadata + statistics as JSON, then exit
+```
+
+It reports facts, not judgments: format, dimensions, bands, dtype, CRS, resolution, bounds, nodata, and per-band statistics. For NetCDF/HDF it lists variables; add `--subset N` to inspect one:
+
+```bash
+viewinline data.nc --info                    # list variables
+viewinline data.nc --subset 7 --info         # inspect variable 7
+viewinline scene.hdf --subset 1 --info       # inspect HDF subdataset 1
+```
+
+`--info` always returns JSON, including a `{"readable": false, "error": ...}` object on unreadable input, so an agent can always parse the result. Pairs well with `--export` (see Usage) when the agent wants to *see* the output too, not just read its metadata.
+
+### `--info` — structured inspection
+
+Prints file metadata as JSON and exits (no image is drawn). Reports facts, not judgments — the agent interprets them in context.
+
+```bash
+viewinline result.tif --info
+```
+```json
+{
+  "format": "GTiff",
+  "filename": "result.tif",
+  "dimensions": [1001, 1001],
+  "bands": 3,
+  "dtype": "uint16",
+  "crs": "EPSG:32631",
+  "resolution": [10.0, 10.0],
+  "bounds": [590520.0, 5780620.0, 600530.0, 5790630.0],
+  "nodata": null,
+  "statistics": {
+    "method": "full",
+    "bands_total": 3,
+    "bands_reported": 3,
+    "per_band": [
+      {"band": 1, "min": 0.0, "max": 10964.0, "mean": 1009.32, "valid_fraction": 1.0, "naninf_fraction": 0.0}
+    ]
+  }
+}
+```
+
+For **NetCDF and HDF**, `--info` lists the file's variables/subdatasets; add `--subset N` to inspect one:
+
+```bash
+viewinline data.nc --info                    # list variables
+viewinline data.nc --subset 7 --info         # inspect variable 7 (dims, dtype, units, stats)
+viewinline scene.hdf --subset 1 --info       # inspect HDF subdataset 1
+```
+
+`--info` **always returns JSON**, including on failure. Unsupported or unreadable inputs return a structured error rather than crashing, so an agent can always parse the result:
+
+```json
+{"error": "no directly-readable bands (file has subdatasets)", "readable": false, "subdataset_count": 22}
+```
+
+Notes on the output:
+- `crs` is an `EPSG:code` when one can be resolved, the full WKT string when the CRS has no EPSG code (e.g. MODIS Sinusoidal), or `null` when the file has no CRS.
+- Statistics exclude NoData and non-finite pixels; `valid_fraction` and `naninf_fraction` report how much was excluded.
+- For files with many bands, per-band stats are capped (a `bands_reported` < `bands_total` and a `note` indicate truncation — absence of a band's stats does **not** imply a problem).
+- Large rasters are sampled for statistics (`"method": "sampled"`); small ones use every pixel (`"method": "full"`).
+
+### `--export` — visual inspection
+
+Saves the rendered image to a file (PNG or JPEG, chosen by extension) so an agent can also inspect it with its vision capabilities, then prints the path as JSON:
+
+```bash
+viewinline result.tif --export out.png
+```
+```json
+{"path": "/abs/path/out.png"}
+```
+
+`--export` works with **any display option** — the saved image is exactly what viewinline would render, after all flags are applied:
+
+```bash
+viewinline scene.tif --rgb 4 3 2 --export rgb.png
+viewinline dem.tif --colormap terrain --export dem.png
+viewinline result.tif --display 1 --export full_res.png   # full resolution instead of terminal-fit
+```
+
+The exported image is a quick-look representation for catching problems metadata can't reveal — blank output, stripes, artifacts, holes, wrong orientation, unexpected extent, or bad color scaling — **not** a publication-quality rendering.
+
+> **Scope:** `--info` and `--export` tell you what a file *is* and what it *looks like*. Neither claims the scientific result is *correct* — that judgment stays with the agent.
 
 ## Need help?
 NASA staff can ask questions about usage via the documentation-based assistant 'viewtif + viewgeom + viewinline Helper' via the ChatGSFC Agent Marketplace.
